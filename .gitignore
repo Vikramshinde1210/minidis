@@ -31,3 +31,5 @@ bin/
 
 ### AOF files ###
 *.aof
+
+.idea
