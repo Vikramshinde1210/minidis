@@ -1,9 +1,8 @@
-import org.xml.sax.SAXNotRecognizedException;
-
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 public final class Commands {
     @FunctionalInterface
@@ -45,11 +44,28 @@ public final class Commands {
         reg("INCR", a -> { arity(a, 2); return incrBy(a.get(1), 1);});
         reg("DECR", a -> { arity(a, 2); return incrBy(a.get(1), -1);});
         reg("INCRBY", a -> { arity(a, 3); return incrBy(a.get(1), parseLong(a.get(2)));});
+        reg("EXPIRE", a -> { arity(a, 3); return pexpireAt(a.get(1), store.now() +  parseLong(a.get(2)) * 1000);});
+        reg("PEXPIREAT", a -> { arity(a, 3); return pexpireAt(a.get(1), store.now() +  parseLong(a.get(2)));});
+        reg("TTL", a -> { arity(a, 2); return ttl(a.get(1));});
+        reg("KEYS", a -> { arity(a, 2); return keys(a.get(1));});
     }
 
     private Reply set(List<String> a){
-        arity(a, 3);                                    // options like EX/NX will be added in future commits
-        store.put(a.get(1), a.get(2));
+        if (a.size() < 3) throw new CommandException("ERR wrong number of arguments for 'set'");
+        String  key = a.get(1), value = a.get(2);
+        Long deadline = null;
+        boolean nx = false;
+        for (int i = 3; i < a.size(); i++){
+            switch (a.get(i).toUpperCase(Locale.ROOT)){
+                case "EX" -> deadline = store.now() + parseLong(next(a, ++i)) * 1000;   // seconds
+                case "PX" -> deadline = store.now() + parseLong(next(a, ++i));          // milli sec
+                case "NX" -> nx = true;                                                 // only if absent
+                default -> throw new CommandException("ERR syntax error");
+            }
+        }
+        if (nx && store.get(key) != null) return Reply.NIL;
+        store.put(key, value);                                                          // clears any old TTL
+        if (deadline != null) store.expireAT(key, deadline);
         return Reply.OK;
     }
 
@@ -90,9 +106,11 @@ public final class Commands {
         } catch (ArithmeticException e){
             throw new CommandException("ERR increment or decrement would overflow");
         }
-        store.put(key, String.valueOf(updated));    // stored as string
+        if (v == null) store.put(key, String.valueOf(updated));
+        else store.putKeepTtl(key, String.valueOf(updated));
         return new Reply.Int(updated);
     }
+
 
 
     // ---------------------------- Helpers ------------------------------
@@ -117,5 +135,34 @@ public final class Commands {
         CommandException(String message){
             super(message, null, false, false);
         }
+    }
+
+    private static String next(List<String> a, int i){
+        if(i > a.size()) throw new CommandException("ERR syntax error");
+        return a.get(i);
+    }
+
+    // -------------------------- expiry ------------------------------------------
+    private Reply pexpireAt(String key, long epochMillis){
+        if (store.get(key) == null) return new Reply.Int(0);
+        store.expireAT(key, epochMillis);
+        return new Reply.Int(1);
+    }
+
+    private Reply ttl(String key){
+        if (store.get(key) == null) return new Reply.Int(-2);    // no such key
+        Long dealine = store.expiryOf(key);
+        if (dealine == null) return new Reply.Int(-1);           // key exists, no TTL
+        return new Reply.Int(Math.max(0, (dealine - store.now() + 999) / 1000)); // round up to whole seconds
+    }
+
+    private Reply keys(String glob){
+        Pattern p = Pattern.compile(glob.replace("?",".").replace("*", ".*"), Pattern.DOTALL);
+        return new Reply.Array(store.keys().stream().filter(k -> p.matcher(k).matches()).
+                <Reply>map(Reply.Bulk::new).toList());
+    }
+
+    public void sweepExpired(){
+        store.evictExpired(20);
     }
 }

@@ -22,10 +22,11 @@ public class Server implements Closeable {
 
     public Server(int port) throws IOException {
         this.serverSocket = new ServerSocket(port);
-        this.commands = new Commands(new Store());
+        this.commands = new Commands(new Store(System::currentTimeMillis));
     }
 
     public void start(){
+        executor.scheduleAtFixedRate(commands::sweepExpired, 100, 100, TimeUnit.MILLISECONDS);
         Thread.ofPlatform().name("acceptor").daemon(true).start(this::acceptLoop);
     }
 
@@ -47,7 +48,7 @@ public class Server implements Closeable {
             List<String> command;
             while ((command = Resp.readCommand(in)) != null){           // null = client closed the connection
                 if (command.isEmpty()) continue;
-                final List<String> cmd = command;                       // lamdas need an effectively final variable
+                final List<String> cmd = command;                       // lambdas need an effectively final variable
                 Reply reply = executor.submit(() -> commands.execute(cmd)).get();
                 Resp.write(out, reply);
                 out.flush();
