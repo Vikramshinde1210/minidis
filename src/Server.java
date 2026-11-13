@@ -12,7 +12,7 @@ import java.util.concurrent.*;
  * There are no real commands yet: whatever the client sends is echoed back as a bulk string.
  */
 
-public class Server {
+public class Server implements Closeable {
     private final ServerSocket serverSocket;
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(
             r -> new Thread(r, "command-executor")
@@ -65,5 +65,11 @@ public class Server {
         server.start();
         System.out.println("minidis listening on "+ port);
         Thread.currentThread().join();                            // keep main alive; the acceptor is daemon thread
+    }
+
+    @Override
+    public void close() throws IOException {
+        serverSocket.close();    // makes accept() throw, so the acceptor loop ends
+        executor.shutdown();     // lets the command executor thread finish and exit
     }
 }
