@@ -11,7 +11,7 @@ import java.util.List;
  *
  * */
 public class Resp {
-    /** Same limits reids uses: protects the server from a client announcing absurd sizes. */
+    /** Same limits redis uses: protects the server from a client announcing absurd sizes. */
     public static final int MAX_ARGS = 1_048_576;
     public static final int MAX_BULK = 512 * 1024 * 1024;
     public static final int MAX_LINE = 64 * 1024;
