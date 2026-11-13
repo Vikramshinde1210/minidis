@@ -42,6 +42,9 @@ public final class Commands {
         reg("GET", this::get);
         reg("DEL", this::del);
         reg("EXISTS", this::exists);
+        reg("INCR", a -> { arity(a, 2); return incrBy(a.get(1), 1);});
+        reg("DECR", a -> { arity(a, 2); return incrBy(a.get(1), -1);});
+        reg("INCRBY", a -> { arity(a, 3); return incrBy(a.get(1), parseLong(a.get(2)));});
     }
 
     private Reply set(List<String> a){
@@ -74,10 +77,35 @@ public final class Commands {
         return new Reply.Int(a.subList(1, a.size()).stream().filter(k -> store.get(k) != null).count());
     }
 
+    private Reply incrBy(String key, long delta){
+        Object v = store.get(key);
+        long current = 0;                       // a missing key count as zero
+        if( v != null) {
+            if( !(v instanceof String s)) throw wrongType();
+            current = parseLong(s);            // "abc" -> err
+        }
+        long updated;
+        try{
+            updated = Math.addExact(current, delta); // throws instead of silently wrapping around
+        } catch (ArithmeticException e){
+            throw new CommandException("ERR increment or decrement would overflow");
+        }
+        store.put(key, String.valueOf(updated));    // stored as string
+        return new Reply.Int(updated);
+    }
+
 
     // ---------------------------- Helpers ------------------------------
     private static void arity(List<String> a, int expected){
         if (a.size() != expected) throw new CommandException("ERR wrong number of arguments for '"+ a.get(0).toLowerCase() + "'");
+    }
+
+    private static long parseLong(String s){
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e){
+            throw new CommandException("ERR value is not an integer or out of range");
+        }
     }
 
     private static CommandException wrongType(){
