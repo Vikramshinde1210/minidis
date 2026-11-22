@@ -1,7 +1,4 @@
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Pattern;
 
 public final class Commands {
@@ -48,6 +45,14 @@ public final class Commands {
         reg("PEXPIREAT", a -> { arity(a, 3); return pexpireAt(a.get(1), store.now() +  parseLong(a.get(2)));});
         reg("TTL", a -> { arity(a, 2); return ttl(a.get(1));});
         reg("KEYS", a -> { arity(a, 2); return keys(a.get(1));});
+        reg("LPUSH", a -> push(a, true));
+        reg("RPUSH", a -> push(a, false));
+        reg("LPOP", a -> { arity(a, 2); return pop(a.get(1));});
+        reg("LLEN", a -> { arity(a, 2); return new Reply.Int(list(a.get(1), false).size());});
+        reg("LRANGE", a -> {arity(a,4); return lrange(a.get(1), parseLong(a.get(2)), parseLong(a.get(3)));});
+        reg("HSET", this::hset);
+        reg("HGET", a -> {arity(a, 3); return hget(a.get(1), a.get(2));});
+        reg("HGETALL", a -> {arity(a, 2); return hgetall(a.get(1));});
     }
 
     private Reply set(List<String> a){
@@ -111,7 +116,81 @@ public final class Commands {
         return new Reply.Int(updated);
     }
 
+    // ---------------------------- lists -------------------------------------
+    private Reply push(List<String> a, boolean left){
+        if(a.size() < 3) throw new CommandException("ERR wrong number of arguments for '" + a.get(0).toLowerCase(Locale.ROOT) + "'");
+        Deque<String> list = list(a.get(1), true);
+        for (String v: a.subList(2, a.size())){
+            if (left) list.addFirst(v); else list.addLast(v);
+        }
+        return new Reply.Int(list.size());
+    }
 
+    private Reply pop(String key){
+        Deque<String> list = list(key, false);
+        if (list.isEmpty()) return Reply.NIL;
+        String v = list.pollFirst();
+        if (list.isEmpty()) store.delete(key);       // Redis never keeps and empty list
+        return new Reply.Bulk(v);
+    }
+
+    private Reply lrange(String key, long start, long stop){
+        List<String> all = new ArrayList<>(list(key, false));
+        int n = all.size();
+        long from = start < 0 ? Math.max(0, n + start): start;  // negative = counted from the end
+        long to = stop < 0 ? n + stop : Math.min(stop, n-1);
+        if (from > to || from >= n) return new Reply.Array(List.of());
+        return bulks(all.subList((int) from, (int) to + 1)); // stop is inclusive
+    }
+
+    /** Returns the LIVE list stored under the key (not a copy). */
+    @SuppressWarnings("unchecked")
+    private Deque<String> list(String key, boolean create){
+        Object v = store.get(key);
+        if (v == null){
+            Deque<String> fresh = new ArrayDeque<>();
+            if (create) store.put(key, fresh);
+            return fresh;
+        }
+        if (!(v instanceof Deque<?>)) throw wrongType();
+        return (Deque<String>) v;
+    }
+
+    // ---------------------------- Hashes ------------------------------
+
+    private Reply hset(List<String> a){
+        if (a.size() < 4 || a.size() % 2 != 0) throw new ClassCastException("ERR wrong number of arguments for 'hset'");
+        Map<String, String> h = hash(a.get(1), true);
+        long added = 0;
+        for (int i = 2; i < a.size(); i++) {
+            if (h.put(a.get(i), a.get(i+1)) == null) added++;        // only NEW fields count
+        }
+        return new Reply.Int(added);
+    }
+
+    private Reply hget(String key, String field){
+        String v = hash(key, false).get(field);
+        return v == null ? Reply.NIL : new Reply.Bulk(v);
+    }
+
+    private Reply hgetall(String key){
+        List<Reply> flat = new ArrayList<>();
+        hash(key, false).forEach((f, v) -> {flat.add(new Reply.Bulk(f)); flat.add(new Reply.Bulk(v)); });
+        return new Reply.Array(flat);                         // field, value, field , value
+    }
+
+    /** Returns the LIVE Hash stored under the key (not a copy). */
+    @SuppressWarnings("unchecked")
+    private Map<String, String> hash(String key, boolean create){
+        Object v = store.get(key);
+        if (v == null){
+            Map<String, String> fresh = new LinkedHashMap<>();
+            if (create) store.put(key, fresh);
+            return fresh;
+        }
+        if(!(v instanceof Map<?,?>)) throw wrongType();
+        return (Map<String, String>) v;
+    }
 
     // ---------------------------- Helpers ------------------------------
     private static void arity(List<String> a, int expected){
@@ -140,6 +219,10 @@ public final class Commands {
     private static String next(List<String> a, int i){
         if(i > a.size()) throw new CommandException("ERR syntax error");
         return a.get(i);
+    }
+
+    private static Reply bulks(List<String> items){
+        return new Reply.Array(items.stream().<Reply>map(Reply.Bulk::new).toList());
     }
 
     // -------------------------- expiry ------------------------------------------
